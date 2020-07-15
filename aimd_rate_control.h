@@ -23,7 +23,6 @@ enum class BandwidthUsage {
     kLast
 };
 
-
 enum RateControlState { kRcHold, kRcIncrease, kRcDecrease };
 
 enum RateControlRegion { kRcNearMax, kRcAboveMax, kRcMaxUnknown };
@@ -46,14 +45,28 @@ struct RateControlInput {
 // is unknown, we will switch to a "slow-start mode" where we increase
 // multiplicatively.
 // 上面注释很重要!!!
+// 当可用带宽改变或者未知时，将会切换到慢启动模式,乘性增加
+// 为什么慢启动模式乘性增加???
 class AimdRateControl {
 public:
     AimdRateControl();
     ~AimdRateControl();
 
+    // Returns true if the bitrate estimate hasn't been changed for more than
+    // an RTT, or if the estimated_throughput is less than half of the current
+    // estimate. Should be used to decide if we should reduce the rate further
+    // when over-using.
+    bool TimeToReduceFurther(int64_t now_ms,
+            uint32_t estimated_throughput_bps) const;
+
+    uint32_t LatestEstimate() const;
     uint32_t Update(const RateControlInput* input, int64_t now_ms);
     void SetEstimate(int bitrate_bps, int64_t now_ms);
 
+    // Returns the increase rate when used bandwidth is near the link capacity.
+    int GetNearMaxIncreaseRateBps() const;
+    // Returns the expected time between overuse signals (assuming steady state).
+    int GetExpectedBandwidthPeriodMs() const;
 private:
     // Update the target bitrate based on, among other things, the current rate
     // control state, the current target bitrate and the estimated throughput.
@@ -64,11 +77,20 @@ private:
     // constant to allow built up queues to drain.
     uint32_t ChangeBitrate(uint32_t current_bitrate, const RateControlInput& input, int64_t now_ms);
 
+    // 固定码率
+    // Clamps new_bitrate_bps to within the configured min bitrate and a linear
+    // function of the throughput, so that the new bitrate can't grow too
+    // large compared to the bitrate actually being received by the other end.
+    uint32_t ClampBitrate(uint32_t new_bitrate_bps,
+            uint32_t estimated_throughput_bps) const;
+
     uint32_t MultiplicativeRateIncrease(int64_t now_ms,
             int64_t last_ms,
             uint32_t current_bitrate_bps) const;
     uint32_t AdditiveRateIncrease(int64_t now_ms, int64_t last_ms) const;
 
+    void UpdateChangePeriod(int64_t now_ms);
+    void UpdateMaxThroughputEstimate(float estimated_throughput_kbps);
     void ChangeState(const RateControlInput& input, int64_t now_ms);
 
     uint32_t _min_configured_bitrate_bps;
@@ -85,8 +107,8 @@ private:
     bool _bitrate_is_initialized;
     float _beta;
     int64_t _rtt;
-    const bool _in_experiment_;
-    const bool _smoothing_experiment_;
+    const bool _in_experiment;
+    const bool _smoothing_experiment;
     const bool _in_initial_backoff_interval_experiment;
     int64_t _initial_backoff_interval_ms;
     int _last_decrease;
